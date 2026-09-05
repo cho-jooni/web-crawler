@@ -119,6 +119,10 @@ PermissionError: [WinError 5] 액세스가 거부되었습니다:
   (Node 20 타깃이라 러너가 Node 24 로 강제 실행하며 deprecation 경고를 남겼다)
 - **ubuntu + windows 매트릭스.** 주 플랫폼이 Windows 인데 ubuntu 에서만 돌렸다.
   위의 인코딩·파일잠금 계열이 CI 에서 한 번도 안 걸린 이유다
+- **파이썬 3.10 · 3.11 · 3.13 매트릭스.** README·requirements 는 3.10 이상을 지원한다고
+  말하는데 CI 는 3.11 하나만 돌렸다. 그 약속이 지켜지는지 아무도 검증하지 않고 있었다.
+  실제로 이 갈래를 만들면서 3.12 전용 API(`shutil.rmtree(onexc=)`)를 썼다가 3.11 에서
+  터졌고, 매트릭스가 없었다면 그대로 나갔을 것이다
 - pip 캐시 추가 — `scrapling[fetchers]` 가 playwright·patchright 까지 끌고 와 무겁다
 - 드리프트 검사를 별도 job 으로 분리(플랫폼 무관이라 한 번만 돌면 된다)
 - `workflow_dispatch` 추가
