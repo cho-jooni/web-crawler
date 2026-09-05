@@ -82,6 +82,13 @@ def _force_writable(func, path, _exc):
     func(path)
 
 
+# rmtree 의 오류 콜백 인자 이름이 3.12 에서 바뀌었다(onerror → onexc).
+# 이 저장소는 Python 3.10 이상을 지원한다고 문서에 적혀 있으므로 양쪽을 다 지원한다.
+# 두 콜백의 시그니처는 (func, path, 세번째) 로 같아서 함수는 하나로 충분하다.
+_RMTREE_HANDLER = ({"onexc": _force_writable} if sys.version_info >= (3, 12)
+                   else {"onerror": _force_writable})
+
+
 def _rmtree_resilient(path: Path, attempts: int = 5) -> None:
     """Windows 에서 rmtree 는 자주 '잠깐' 실패한다.
 
@@ -91,7 +98,7 @@ def _rmtree_resilient(path: Path, attempts: int = 5) -> None:
     """
     for attempt in range(attempts):
         try:
-            shutil.rmtree(path, onexc=_force_writable)
+            shutil.rmtree(path, **_RMTREE_HANDLER)
             return
         except OSError:
             if attempt == attempts - 1:
