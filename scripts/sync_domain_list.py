@@ -24,6 +24,14 @@ from pathlib import Path
 
 from profile_policy import is_distributable, public_dirs
 
+# Windows 콘솔(cp949 등)에서 인코딩 불가 문자로 죽지 않도록.
+# 이 파일의 안내 문구에는 cp949 에 없는 글자(— · ⚠)가 들어 있다.
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 # scripts/sync_domain_list.py: parents[0]=scripts [1]=repo root
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FINGERPRINTS = REPO_ROOT / "fingerprints"

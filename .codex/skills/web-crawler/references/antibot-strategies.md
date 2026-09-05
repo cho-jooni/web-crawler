@@ -42,14 +42,32 @@ SKILL.md Step 3에서 안티봇이 감지되면 이 문서를 참조한다.
 
 **HTTP 200 = 성공이 아니라 "검증 시작"이다.** (insane-search R2) WAF는 200 OK로 챌린지/빈 셸을 돌려주는 경우가 많아, 그대로 파싱하면 "0건"이 아니라 **"쓰레기 N건"이 통과**한다. 수집 직전(첫 페이지)과 Step 5 검증에서 `utils.detect_softblock()`로 거른다.
 
-### 4단계 AND 검증
+### 결정적 신호와 보강 신호
+
+**결정적 신호** — 하나만 있어도 차단으로 본다. 본문이 크든 셀렉터가 맞든 상관없다.
 
 | # | 검사 | 차단 시그널 |
 |---|------|------------|
-| 1 | 챌린지 마커 부재 | `sec-if-cpt-container`, `Access Denied`, `errors.edgesuite.net`, `Pardon Our Interruption`(PX), `captcha-delivery.com`(DataDome), `Just a moment...`(CF) |
-| 2 | 응답 크기 정상 | < 3KB 또는 WAF 특유 고정 크기 |
-| 3 | 쿠키 센서 정상 | **`_abck=...~-1~`** = Akamai 미통과(아직 차단) 상태 — 존재 여부가 아니라 **값**을 본다 |
-| 4 | success selector 매칭 | 핵심 콘텐츠 셀렉터 hit → `strong_ok`, 미제공 → `weak_ok` |
+| 1 | HTTP 상태 | `401` · `402` · `403` |
+| 2 | 챌린지 마커 | `sec-if-cpt-container`, `Access Denied`, `errors.edgesuite.net`, `Pardon Our Interruption`(PX), `captcha-delivery.com`(DataDome), `Just a moment...`(CF) |
+| 3 | 쿠키 센서 | **`_abck=...~-1~`** = Akamai 미통과(아직 차단) 상태 — 존재 여부가 아니라 **값**을 본다 |
+
+**보강 신호** — 응답 크기(`min_size`, 기본 3KB). **단독으로는 차단 판정을 내리지 않는다.**
+
+작다는 것은 "챌린지일 수도 있다" 이지 "차단됐다" 가 아니다. 아래 둘 중 하나라도 있으면
+가져오려던 것이 실제로 거기 있다는 뜻이므로 작아도 정상으로 본다.
+
+- `selector_hit=True` — 핵심 콘텐츠 셀렉터가 매칭됐다
+- 본문이 **내용 있는 JSON** 으로 파싱된다 — 빈 배열·빈 객체는 빈 셸과 구별되지 않으므로 제외
+
+> **왜 크기를 단독 근거에서 뺐나.** 이 문서가 1순위로 권하는 수집 경로가 숨은 API(`plain_session`)인데
+> API 응답은 3KB 를 넘지 않는 경우가 대부분이다. 크기만으로 차단을 선언하면 **차단이 없는 사이트에서
+> 이음매 통지 게이트가 뜬다** — 사용자에게 하지 않아도 될 우회 판단을 시키는 것이다.
+> 경고가 자주 틀리면 사람은 경고 자체를 무시한다. PII 전화번호 패턴에서 이미 겪은 문제와 같은 축이다.
+
+**최종 판정** — 결정적 신호도 보강 신호도 없으면 통과. 이때 success selector 매칭 여부로
+`strong_ok`(hit) / `weak_ok`(미제공·미매칭) 를 구분한다. 셀렉터 미스 **단독**으로는 차단하지 않는다
+(셀렉터 오타·자가치유와 충돌한다).
 
 ```python
 from utils import detect_softblock

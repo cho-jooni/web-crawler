@@ -15,10 +15,21 @@ byte-identical 복사. 스킬 수정 후 반드시 재실행한다.
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
+import stat
 import sys
 import tempfile
+import time
 from pathlib import Path
+
+# Windows 콘솔(cp949 등)에서 인코딩 불가 문자로 죽지 않도록.
+# 이 파일의 안내 문구에는 cp949 에 없는 글자(— · ⚠)가 들어 있다.
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(errors="replace")
+    except (AttributeError, ValueError):
+        pass
 
 # scripts/sync_codex_mirror.py: parents[0]=scripts [1]=repo root
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -65,9 +76,30 @@ def _transform_bytes(path: Path, data: bytes) -> bytes:
     return data
 
 
-def build_mirror(dst: Path) -> None:
-    if dst.exists():
-        shutil.rmtree(dst)
+def _force_writable(func, path, _exc):
+    """읽기 전용 속성 때문에 지워지지 않는 경우를 한 번 풀어 준다."""
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+
+def _rmtree_resilient(path: Path, attempts: int = 5) -> None:
+    """Windows 에서 rmtree 는 자주 '잠깐' 실패한다.
+
+    OneDrive·백신·검색 인덱서가 방금 쓴 파일의 핸들을 잠시 붙들고 있으면
+    WinError 5(액세스 거부) / 32(사용 중) 가 난다. 대개 수백 ms 뒤에 풀린다.
+    한 번 실패했다고 포기하면 미러가 반쯤 지워진 채 남는다.
+    """
+    for attempt in range(attempts):
+        try:
+            shutil.rmtree(path, onexc=_force_writable)
+            return
+        except OSError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(0.2 * (attempt + 1))
+
+
+def _populate(dst: Path) -> None:
     for src_file in _iter_files(SRC):
         rel = src_file.relative_to(SRC)
         out = dst / rel
@@ -75,6 +107,29 @@ def build_mirror(dst: Path) -> None:
         out.write_bytes(_transform_bytes(src_file, src_file.read_bytes()))
     dst.mkdir(parents=True, exist_ok=True)
     (dst / "_GENERATED.md").write_text(GENERATED_MARKER, encoding="utf-8")
+
+
+def build_mirror(dst: Path) -> None:
+    """미러를 통째로 새로 만든 뒤 마지막에 한 번만 갈아끼운다.
+
+    예전에는 `rmtree(dst)` 로 먼저 지우고 그 자리에서 다시 채웠다. 그러면 삭제나
+    복사가 중간에 실패했을 때 **미러가 반쯤 지워진 상태로 남는다** — 그리고 그 다음
+    `--check` 는 stale 을 보고하므로, 원인이 파일 잠금이었다는 사실이 드러나지 않는다.
+    지금은 옆에 완성본을 만들어 두고 마지막에 교체하므로, 도중에 실패하면 **기존
+    미러가 그대로 살아 있다.**
+    """
+    staging = dst.parent / (dst.name + ".new")
+    if staging.exists():
+        _rmtree_resilient(staging)
+    staging.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        _populate(staging)
+        if dst.exists():
+            _rmtree_resilient(dst)
+        os.replace(staging, dst)        # 같은 디렉터리 안이라 단순 rename 이다
+    finally:
+        if staging.exists():
+            _rmtree_resilient(staging)
 
 
 def _stale_files(mirror: Path, fresh: Path) -> list[str]:

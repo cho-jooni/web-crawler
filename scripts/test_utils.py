@@ -610,3 +610,104 @@ def test_phone_pattern_flags_bare_mobile_number(value):
     """구분자 없는 11자리 휴대폰은 형식이 명확하므로 잡는다."""
     warnings = detect_pii([{"메모": value}])
     assert any("전화번호" in w for w in warnings), f"놓침: {value!r}"
+
+
+# ── S5: 소프트블록 게이트 ──
+# 이 게이트는 Step 5.0 에서 다른 모든 검증보다 먼저 돈다. 여기서 오탐이 나면
+# 차단이 없는 사이트에서 우회 통지 게이트가 뜬다 — 사용자에게 하지 않아도 될
+# 판단을 시키는 것이므로, 결정적 신호와 보강 신호의 경계를 테스트로 고정한다.
+from utils import detect_softblock
+
+BIG = "x" * 5000
+
+
+def test_softblock_http_403_is_decisive():
+    v = detect_softblock(BIG, status=403)
+    assert v["blocked"] is True
+    assert v["verdict"] == "blocked"
+
+
+@pytest.mark.parametrize("status", [401, 402, 403])
+def test_softblock_auth_statuses_block(status):
+    assert detect_softblock(BIG, status=status)["blocked"] is True
+
+
+@pytest.mark.parametrize("marker", [
+    "Just a moment...",
+    "Pardon Our Interruption",
+    "Access Denied",
+    "captcha-delivery.com",
+    "Verifying you are human",
+])
+def test_softblock_challenge_marker_is_decisive(marker):
+    """마커는 결정적이다 — 본문이 크고 셀렉터가 맞아도 차단으로 본다."""
+    v = detect_softblock(BIG + marker, status=200, selector_hit=True)
+    assert v["blocked"] is True
+    assert v["verdict"] == "challenge"
+
+
+def test_softblock_akamai_cookie_sensor_is_decisive():
+    v = detect_softblock(BIG, status=200, cookies={"_abck": "AAA~-1~BBB"})
+    assert v["blocked"] is True
+    assert "akamai" in v["signals"][0]
+
+
+def test_softblock_solved_akamai_cookie_passes():
+    v = detect_softblock(BIG, status=200, cookies={"_abck": "AAA~0~BBB"})
+    assert v["blocked"] is False
+
+
+def test_small_json_api_response_is_not_blocked():
+    """숨은 API 응답은 작다. 크기만으로 차단하면 이 저장소가 1순위로 권하는
+    수집 경로가 통째로 오탐이 된다."""
+    body = json.dumps({"items": [{"id": i, "name": f"상품{i}"} for i in range(20)]},
+                      ensure_ascii=False)
+    assert len(body) < 3000
+    v = detect_softblock(body, status=200)
+    assert v["blocked"] is False
+    assert v["verdict"] == "weak_ok"
+
+
+def test_small_json_array_response_is_not_blocked():
+    v = detect_softblock('[{"a": 1}, {"a": 2}]', status=200)
+    assert v["blocked"] is False
+
+
+def test_small_page_with_selector_hit_is_not_blocked():
+    """가져오려던 것이 실제로 거기 있으면 작아도 정상이다."""
+    v = detect_softblock("<div class='item'>상품A</div>", status=200, selector_hit=True)
+    assert v["blocked"] is False
+    assert v["verdict"] == "strong_ok"
+
+
+def test_small_page_without_any_evidence_is_blocked():
+    """작고, 셀렉터도 안 맞고, 데이터도 아니면 — 그때는 빈 셸로 본다."""
+    v = detect_softblock("<html><body></body></html>", status=200, selector_hit=False)
+    assert v["blocked"] is True
+    assert "too small" in v["signals"][0]
+
+
+def test_empty_json_container_is_not_treated_as_data():
+    """빈 배열·빈 객체는 빈 셸과 구별되지 않는다 — 데이터 있음으로 치지 않는다."""
+    assert detect_softblock("[]", status=200)["blocked"] is True
+    assert detect_softblock("{}", status=200)["blocked"] is True
+
+
+def test_malformed_json_is_not_treated_as_data():
+    assert detect_softblock('{"items": [', status=200)["blocked"] is True
+
+
+def test_large_normal_page_passes_without_selector_info():
+    v = detect_softblock(BIG, status=200)
+    assert v["blocked"] is False
+    assert v["verdict"] == "weak_ok"
+
+
+def test_min_size_is_configurable():
+    body = "<div>짧지만 정상</div>"
+    assert detect_softblock(body, status=200, min_size=0)["blocked"] is False
+
+
+def test_empty_body_is_blocked():
+    assert detect_softblock("", status=200)["blocked"] is True
+    assert detect_softblock(None, status=200)["blocked"] is True

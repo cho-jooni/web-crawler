@@ -12,6 +12,14 @@ import time
 import urllib.request
 import json
 
+# Windows 콘솔(cp949 등)에서 인코딩 불가 문자로 죽지 않도록.
+# 이 파일의 안내 문구에는 cp949 에 없는 글자(— · ⚠)가 들어 있다.
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 
 def find_chrome() -> str | None:
     """시스템에 설치된 Chrome 경로를 찾기."""

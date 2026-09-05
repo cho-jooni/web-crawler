@@ -225,18 +225,45 @@ _SOFTBLOCK_MARKERS = (
 )
 
 
+def _looks_like_structured_data(text: str) -> bool:
+    """본문이 JSON 으로 파싱되고 내용이 들어 있는지.
+
+    WAF 챌린지는 사실상 항상 HTML 이다. 반대로 이 저장소가 1순위로 권하는 수집 경로
+    (숨은 API · plain_session)는 작은 JSON 을 돌려준다. 그 둘을 크기로 구분할 수 없으니
+    형식으로 구분한다. 빈 배열·빈 객체는 '데이터 있음' 으로 치지 않는다 — 빈 셸과
+    구별이 안 되고, 0건이라는 사실 자체는 뒤의 건수 검사가 잡는다.
+    """
+    stripped = (text or "").strip()
+    if not stripped or stripped[0] not in "[{":
+        return False
+    try:
+        parsed = json.loads(stripped)
+    except (ValueError, TypeError):
+        return False
+    return bool(parsed)
+
+
 def detect_softblock(text, status: int = 200, cookies: dict | None = None,
                      selector_hit: bool | None = None, min_size: int = 3000) -> dict:
     """가짜 200(소프트블록) 판별. HTTP 200이라도 본문이 WAF 챌린지면 잡아낸다.
 
-    insane-search의 4단계 AND 검증 차용:
-      1) 챌린지 마커 부재  2) 응답 크기 정상  3) 쿠키 센서 정상(_abck=...~-1~ 거부)
-      4) success selector 매칭(제공 시 strong, 미제공 시 weak)
+    판정은 두 층으로 나뉜다.
+
+      **결정적 신호** — 하나만 있어도 차단으로 본다.
+        1) HTTP 401/402/403
+        2) 챌린지 마커 (Akamai/Cloudflare/DataDome/PerimeterX 문구)
+        3) 쿠키 센서 — Akamai `_abck` 가 `...~-1~` 면 아직 미통과
+
+      **보강 신호** — 응답 크기. 단독으로는 차단 판정을 내리지 않는다.
+        본문이 작다는 것은 "챌린지일 수도 있다" 이지 "차단됐다" 가 아니다. 가져오려던
+        것이 실제로 거기 있으면(`selector_hit`) 또는 본문이 JSON 데이터면 작아도 정상이다.
+        크기만으로 차단을 선언하면 숨은 API 응답이 통째로 오탐이 되고, 그 오탐은
+        SKILL.md Step 5.0 규칙에 따라 **차단이 없는 사이트에서 우회 통지 게이트를 띄운다.**
+        경고가 자주 틀리면 사람은 경고 자체를 무시한다 — PII 전화번호에서 이미 겪은 문제다.
 
     반환: {"blocked": bool, "verdict": str, "signals": [..]}
       verdict ∈ strong_ok | weak_ok | challenge | blocked
     selector_hit 단독 미스만으로는 차단 판정하지 않는다(셀렉터 오타/자가치유와 충돌 방지).
-    실제 차단 판정은 마커/크기/쿠키 센서 시그널이 있을 때만.
     """
     text = text or ""
     low = text.lower()
@@ -246,23 +273,24 @@ def detect_softblock(text, status: int = 200, cookies: dict | None = None,
         return {"blocked": True, "verdict": "blocked", "signals": [f"HTTP {status}"]}
 
     signals = []
-    # 1) 챌린지 마커
+    # 1) 챌린지 마커 — 결정적
     for marker in _SOFTBLOCK_MARKERS:
         if marker in low:
             signals.append(f"challenge marker: {marker}")
-    # 2) 응답 크기 (지나치게 작으면 챌린지/빈 셸 의심)
-    if len(text) < min_size:
-        signals.append(f"response too small: {len(text)}B < {min_size}B")
-    # 3) 쿠키 센서 — Akamai _abck 가 '...~-1~' 면 아직 미통과(차단) 상태
+    # 2) 쿠키 센서 — 결정적. Akamai _abck 가 '...~-1~' 면 아직 미통과(차단) 상태
     if cookies:
         abck = cookies.get("_abck", "")
         if "~-1~" in abck:
             signals.append("akamai _abck sensor unsolved (~-1~)")
 
+    # 3) 응답 크기 — 보강 신호. 가져올 것이 실제로 있다는 증거가 없을 때만 올린다.
+    if len(text) < min_size and not selector_hit and not _looks_like_structured_data(text):
+        signals.append(f"response too small: {len(text)}B < {min_size}B")
+
     if signals:
         return {"blocked": True, "verdict": "challenge", "signals": signals}
 
-    # 4) 마커/크기/쿠키 정상 → selector 매칭 여부로 strong/weak 구분
+    # 마커/쿠키/크기 모두 정상 → selector 매칭 여부로 strong/weak 구분
     verdict = "strong_ok" if selector_hit else "weak_ok"
     return {"blocked": False, "verdict": verdict, "signals": []}
 
