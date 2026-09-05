@@ -14,18 +14,26 @@ jobs:
     # 주 사용 플랫폼이 Windows 다(setup.ps1 · PowerShell 안내). ubuntu 에서만 돌리면
     # 경로·인코딩·파일잠금처럼 Windows 에서만 터지는 계열을 영영 못 잡는다.
     # 실제로 그 계열 버그가 있었다 — scripts/test_console_encoding.py 주석 참조.
+    # 파이썬도 하나만 돌리면 안 된다. README·requirements 는 3.10 이상을 지원한다고
+    # 말하는데 3.11 하나만 검증하면 그 약속이 지켜지는지 아무도 모른다. 실제로
+    # 3.12 에서 이름이 바뀐 API(shutil.rmtree onerror→onexc)를 쓰다 걸린 적이 있다.
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        include:
+          - {os: ubuntu-latest, python: "3.10"}    # 문서가 약속한 하한
+          - {os: ubuntu-latest, python: "3.11"}
+          - {os: ubuntu-latest, python: "3.13"}
+          - {os: windows-latest, python: "3.11"}
 
     runs-on: ${{ matrix.os }}
+    name: tests (${{ matrix.os }} · py${{ matrix.python }})
 
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python }}
           # scrapling[fetchers] 는 playwright·patchright 까지 끌고 와 무겁다.
           cache: pip
           cache-dependency-path: requirements.txt
